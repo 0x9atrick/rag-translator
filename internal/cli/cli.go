@@ -149,7 +149,7 @@ func runIngestSeedGit(commitBase, commitTarget, folder, exportFormat, exportPath
 	log.Info().Int("inserted", inserted).Msg("Seed entries stored")
 
 	// 4. Generate and store embeddings.
-	embeddingClient := rag.NewEmbeddingClient(cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingBaseURL, cfg.EmbeddingDimensions)
+	embeddingClient := rag.NewEmbeddingClient(cfg.GeminiAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDimensions)
 	vectorSeeder := seed.NewVectorSeeder(embeddingClient, vectorStore)
 	if err := vectorSeeder.IngestEmbeddings(ctx, entries, cfg.BatchSize); err != nil {
 		return fmt.Errorf("ingest seed embeddings: %w", err)
@@ -318,7 +318,7 @@ func runIngest(inputDir string) error {
 	log.Info().Int("unique_texts", len(allTexts)).Msg("Extracted unique texts")
 
 	// Generate embeddings.
-	embeddingClient := rag.NewEmbeddingClient(cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingBaseURL, cfg.EmbeddingDimensions)
+	embeddingClient := rag.NewEmbeddingClient(cfg.GeminiAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDimensions)
 	embeddings, err := embeddingClient.EmbedBatch(ctx, allTexts, cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("generate embeddings: %w", err)
@@ -368,11 +368,11 @@ func runTranslate(inputDir, outputDir string) error {
 
 	// Initialize components.
 	vectorStore := rag.NewVectorStore(pgPool)
-	embeddingClient := rag.NewEmbeddingClient(cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingBaseURL, cfg.EmbeddingDimensions)
+	embeddingClient := rag.NewEmbeddingClient(cfg.GeminiAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDimensions)
 	graphQuerier := graph.NewGraphQuerier(neo4jDriver)
 	retriever := rag.NewRetriever(vectorStore, embeddingClient, graphQuerier)
 	promptBuilder := translation.NewPromptBuilder()
-	opusClient := translation.NewOpusClient(cfg.AnthropicAPIKey, cfg.TranslationModel)
+	opusClient := translation.NewOpusClient(cfg.GeminiAPIKey, cfg.TranslationModel)
 	translationCache := cache.NewTranslationCache(pgPool)
 
 	// Preload cache.

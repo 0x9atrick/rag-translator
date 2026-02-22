@@ -12,25 +12,24 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// EmbeddingClient generates text embeddings via an OpenAI-compatible API (Qwen3-Embedding).
+const geminiEmbedBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+// EmbeddingClient generates text embeddings via the Google Gemini Embedding API.
 type EmbeddingClient struct {
 	apiKey     string
 	model      string
-	baseURL    string
 	dimensions int
 	httpClient *http.Client
 }
 
-// NewEmbeddingClient creates a new embedding client for Qwen3-Embedding.
-// baseURL should be the embedding API endpoint (e.g. https://dashscope.aliyuncs.com/compatible-mode/v1).
-func NewEmbeddingClient(apiKey, model, baseURL string, dimensions int) *EmbeddingClient {
+// NewEmbeddingClient creates a new Gemini embedding client.
+func NewEmbeddingClient(apiKey, model string, dimensions int) *EmbeddingClient {
 	if dimensions <= 0 {
-		dimensions = 1024
+		dimensions = 768
 	}
 	return &EmbeddingClient{
 		apiKey:     apiKey,
 		model:      model,
-		baseURL:    baseURL,
 		dimensions: dimensions,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
@@ -38,53 +37,67 @@ func NewEmbeddingClient(apiKey, model, baseURL string, dimensions int) *Embeddin
 	}
 }
 
-// --- OpenAI-compatible request/response types ---
+// --- Gemini Embedding API types ---
 
-type embeddingRequest struct {
-	Input      []string `json:"input"`
-	Model      string   `json:"model"`
-	Dimensions int      `json:"dimensions,omitempty"`
+type batchEmbedRequest struct {
+	Requests []singleEmbedRequest `json:"requests"`
 }
 
-type embeddingResponse struct {
-	Data  []embeddingData `json:"data"`
-	Usage embeddingUsage  `json:"usage"`
+type singleEmbedRequest struct {
+	Model                string        `json:"model"`
+	Content              geminiContent `json:"content"`
+	OutputDimensionality int           `json:"outputDimensionality,omitempty"`
 }
 
-type embeddingData struct {
-	Embedding []float32 `json:"embedding"`
-	Index     int       `json:"index"`
+type geminiContent struct {
+	Parts []geminiPart `json:"parts"`
 }
 
-type embeddingUsage struct {
-	TotalTokens int `json:"total_tokens"`
+type geminiPart struct {
+	Text string `json:"text"`
 }
 
-// Embed generates embeddings for a batch of texts.
+type batchEmbedResponse struct {
+	Embeddings []embeddingValues `json:"embeddings"`
+}
+
+type embeddingValues struct {
+	Values []float32 `json:"values"`
+}
+
+// Embed generates embeddings for a batch of texts using Gemini batchEmbedContents.
 func (ec *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
-	reqBody := embeddingRequest{
-		Input:      texts,
-		Model:      ec.model,
-		Dimensions: ec.dimensions,
+	modelPath := fmt.Sprintf("models/%s", ec.model)
+
+	requests := make([]singleEmbedRequest, len(texts))
+	for i, text := range texts {
+		requests[i] = singleEmbedRequest{
+			Model: modelPath,
+			Content: geminiContent{
+				Parts: []geminiPart{{Text: text}},
+			},
+			OutputDimensionality: ec.dimensions,
+		}
 	}
+
+	reqBody := batchEmbedRequest{Requests: requests}
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal embedding request: %w", err)
 	}
 
-	url := ec.baseURL + "/embeddings"
+	url := fmt.Sprintf("%s/%s:batchEmbedContents?key=%s", geminiEmbedBaseURL, ec.model, ec.apiKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create embedding request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+ec.apiKey)
 
 	resp, err := ec.httpClient.Do(req)
 	if err != nil {
@@ -101,31 +114,35 @@ func (ec *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float
 		return nil, fmt.Errorf("embedding API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var embedResp embeddingResponse
+	var embedResp batchEmbedResponse
 	if err := json.Unmarshal(respBody, &embedResp); err != nil {
 		return nil, fmt.Errorf("unmarshal embedding response: %w", err)
 	}
 
-	// Build result ordered by index.
 	results := make([][]float32, len(texts))
-	for _, d := range embedResp.Data {
-		if d.Index < len(results) {
-			results[d.Index] = d.Embedding
+	for i, emb := range embedResp.Embeddings {
+		if i < len(results) {
+			results[i] = emb.Values
 		}
 	}
 
 	log.Debug().
 		Int("texts", len(texts)).
-		Int("tokens", embedResp.Usage.TotalTokens).
+		Int("embeddings", len(embedResp.Embeddings)).
 		Msg("Generated embeddings")
 
 	return results, nil
 }
 
 // EmbedBatch processes texts in batches, respecting API limits.
+// Gemini batchEmbedContents supports up to 100 texts per request.
 func (ec *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string, batchSize int) ([][]float32, error) {
 	if batchSize <= 0 {
-		batchSize = 32
+		batchSize = 100
+	}
+	// Gemini limit is 100 per batch request.
+	if batchSize > 100 {
+		batchSize = 100
 	}
 
 	var allEmbeddings [][]float32

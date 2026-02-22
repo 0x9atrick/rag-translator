@@ -13,16 +13,16 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const anthropicAPIURL = "https://api.anthropic.com/v1/messages"
+const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-// OpusClient handles translation requests via the Anthropic Messages API.
+// OpusClient handles translation requests via the Google Gemini API.
 type OpusClient struct {
 	apiKey     string
 	model      string
 	httpClient *http.Client
 }
 
-// NewOpusClient creates a new Anthropic translation client.
+// NewOpusClient creates a new Gemini translation client.
 func NewOpusClient(apiKey, model string) *OpusClient {
 	return &OpusClient{
 		apiKey: apiKey,
@@ -33,47 +33,65 @@ func NewOpusClient(apiKey, model string) *OpusClient {
 	}
 }
 
-type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system"`
-	Messages  []anthropicMessage `json:"messages"`
+// --- Gemini API request/response types ---
+
+type geminiRequest struct {
+	SystemInstruction *geminiContent  `json:"systemInstruction,omitempty"`
+	Contents          []geminiContent `json:"contents"`
+	GenerationConfig  *genConfig      `json:"generationConfig,omitempty"`
 }
 
-type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+type geminiContent struct {
+	Parts []geminiPart `json:"parts"`
+	Role  string       `json:"role,omitempty"`
 }
 
-type anthropicResponse struct {
-	Content []anthropicContent `json:"content"`
-	Usage   anthropicUsage     `json:"usage"`
-	Error   *anthropicError    `json:"error,omitempty"`
-}
-
-type anthropicContent struct {
-	Type string `json:"type"`
+type geminiPart struct {
 	Text string `json:"text"`
 }
 
-type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+type genConfig struct {
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+	Temperature     float64 `json:"temperature,omitempty"`
 }
 
-type anthropicError struct {
-	Type    string `json:"type"`
+type geminiResponse struct {
+	Candidates    []geminiCandidate `json:"candidates"`
+	UsageMetadata *geminiUsage      `json:"usageMetadata,omitempty"`
+	Error         *geminiError      `json:"error,omitempty"`
+}
+
+type geminiCandidate struct {
+	Content geminiContent `json:"content"`
+}
+
+type geminiUsage struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
+	TotalTokenCount      int `json:"totalTokenCount"`
+}
+
+type geminiError struct {
+	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Status  string `json:"status"`
 }
 
-// Translate sends a translation request to Anthropic and returns the translated text.
+// Translate sends a translation request to Gemini and returns the translated text.
 func (oc *OpusClient) Translate(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
-	reqBody := anthropicRequest{
-		Model:     oc.model,
-		MaxTokens: 4096,
-		System:    systemPrompt,
-		Messages: []anthropicMessage{
-			{Role: "user", Content: userPrompt},
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role:  "user",
+				Parts: []geminiPart{{Text: userPrompt}},
+			},
+		},
+		GenerationConfig: &genConfig{
+			MaxOutputTokens: 8192,
+			Temperature:     0.3,
 		},
 	}
 
@@ -112,14 +130,14 @@ func (oc *OpusClient) Translate(ctx context.Context, systemPrompt, userPrompt st
 }
 
 func (oc *OpusClient) doRequest(ctx context.Context, bodyBytes []byte) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicAPIURL, bytes.NewReader(bodyBytes))
+	url := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiBaseURL, oc.model, oc.apiKey)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", oc.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := oc.httpClient.Do(req)
 	if err != nil {
@@ -140,31 +158,31 @@ func (oc *OpusClient) doRequest(ctx context.Context, bodyBytes []byte) (string, 
 		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var apiResp anthropicResponse
+	var apiResp geminiResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		return "", fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if apiResp.Error != nil {
-		return "", fmt.Errorf("API error: %s: %s", apiResp.Error.Type, apiResp.Error.Message)
+		return "", fmt.Errorf("API error [%s]: %s", apiResp.Error.Status, apiResp.Error.Message)
 	}
 
-	if len(apiResp.Content) == 0 {
-		return "", fmt.Errorf("empty response content")
+	if len(apiResp.Candidates) == 0 {
+		return "", fmt.Errorf("empty response: no candidates")
 	}
 
-	// Extract text content.
+	// Extract text from the first candidate.
 	var result strings.Builder
-	for _, c := range apiResp.Content {
-		if c.Type == "text" {
-			result.WriteString(c.Text)
-		}
+	for _, p := range apiResp.Candidates[0].Content.Parts {
+		result.WriteString(p.Text)
 	}
 
-	log.Debug().
-		Int("input_tokens", apiResp.Usage.InputTokens).
-		Int("output_tokens", apiResp.Usage.OutputTokens).
-		Msg("Translation complete")
+	if apiResp.UsageMetadata != nil {
+		log.Debug().
+			Int("prompt_tokens", apiResp.UsageMetadata.PromptTokenCount).
+			Int("output_tokens", apiResp.UsageMetadata.CandidatesTokenCount).
+			Msg("Translation complete")
+	}
 
 	return strings.TrimSpace(result.String()), nil
 }

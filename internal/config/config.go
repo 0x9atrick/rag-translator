@@ -9,7 +9,7 @@ import (
 )
 
 type Config struct {
-	AnthropicAPIKey       string
+	GeminiAPIKey          string
 	DatabaseURL           string
 	Neo4jURI              string
 	Neo4jUser             string
@@ -17,9 +17,7 @@ type Config struct {
 	WorkerCount           int
 	BatchSize             int
 	MaxConcurrentAPICalls int
-	EmbeddingAPIKey       string
 	EmbeddingModel        string
-	EmbeddingBaseURL      string
 	EmbeddingDimensions   int
 	TranslationModel      string
 }
@@ -30,7 +28,7 @@ func Load() *Config {
 	}
 
 	return &Config{
-		AnthropicAPIKey:       getEnv("ANTHROPIC_API_KEY", ""),
+		GeminiAPIKey:          getEnv("GEMINI_API_KEY", ""),
 		DatabaseURL:           getEnv("DATABASE_URL", "postgres://localhost:5432/rag_translator?sslmode=disable"),
 		Neo4jURI:              getEnv("NEO4J_URI", "bolt://localhost:7687"),
 		Neo4jUser:             getEnv("NEO4J_USER", "neo4j"),
@@ -38,11 +36,9 @@ func Load() *Config {
 		WorkerCount:           getEnvInt("WORKER_COUNT", 8),
 		BatchSize:             getEnvInt("BATCH_SIZE", 10),
 		MaxConcurrentAPICalls: getEnvInt("MAX_CONCURRENT_API_CALLS", 5),
-		EmbeddingAPIKey:       getEnv("EMBEDDING_API_KEY", ""),
-		EmbeddingModel:        getEnv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B"),
-		EmbeddingBaseURL:      getEnv("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-		EmbeddingDimensions:   getEnvInt("EMBEDDING_DIMENSIONS", 1024),
-		TranslationModel:      getEnv("TRANSLATION_MODEL", "claude-sonnet-4-20250514"),
+		EmbeddingModel:        getEnv("EMBEDDING_MODEL", "text-embedding-004"),
+		EmbeddingDimensions:   getEnvInt("EMBEDDING_DIMENSIONS", 768),
+		TranslationModel:      getEnv("TRANSLATION_MODEL", "gemini-2.5-flash"),
 	}
 }
 
